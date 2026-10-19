@@ -9,6 +9,13 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
+
+	"github.com/khangldit/livequiz-kld/internal/config"
+	"github.com/khangldit/livequiz-kld/internal/handler"
+	"github.com/khangldit/livequiz-kld/internal/httpx"
 )
 
 func main() {
@@ -19,42 +26,47 @@ func main() {
 }
 
 func run() error {
-	// Log dạng JSON: dễ đọc trên Render và các hệ thống log.
+	_ = godotenv.Load() // chỉ có tác dụng ở local; trên Render biến môi trường đã có sẵn
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	port := os.Getenv("PORT") // Render tự set biến PORT
-	if port == "" {
-		port = "8080"
+	cfg, err := config.Load()
+	if err != nil {
+		return err
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	// ctx bị "cancel" khi nhận Ctrl+C (SIGINT) hoặc SIGTERM (Render gửi khi redeploy).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		return err
+	}
+	slog.Info("database connected")
+
+	h := handler.New(pool)
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           httpx.CORS(cfg.CORSOrigin, h.Routes()),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("server starting", "port", port)
+		slog.Info("server starting", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
 
 	select {
-	case err := <-errCh: // server lỗi khi khởi động (vd: port bị chiếm)
+	case err := <-errCh:
 		return err
-	case <-ctx.Done(): // nhận tín hiệu tắt
+	case <-ctx.Done():
 	}
 
 	slog.Info("shutting down")
