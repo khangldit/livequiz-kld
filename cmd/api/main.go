@@ -16,6 +16,7 @@ import (
 	"github.com/khangldit/livequiz-kld/internal/config"
 	"github.com/khangldit/livequiz-kld/internal/handler"
 	"github.com/khangldit/livequiz-kld/internal/httpx"
+	"github.com/khangldit/livequiz-kld/internal/auth"
 )
 
 func main() {
@@ -47,7 +48,8 @@ func run() error {
 	}
 	slog.Info("database connected")
 
-	h := handler.New(pool)
+	tokens := auth.NewTokenMaker(cfg.JWTSecret)
+	h := handler.New(pool, tokens)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
