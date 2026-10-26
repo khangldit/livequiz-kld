@@ -7,17 +7,34 @@ import (
 
 	"github.com/khangldit/livequiz-kld/internal/auth"
 	"github.com/khangldit/livequiz-kld/internal/db"
+	"github.com/khangldit/livequiz-kld/internal/game"
 	"github.com/khangldit/livequiz-kld/internal/httpx"
 )
 
-type Handler struct {
-	pool   *pgxpool.Pool
-	q      *db.Queries
-	tokens *auth.TokenMaker
+// Deps gom các dependency để New() không phải nhận một hàng dài tham số.
+type Deps struct {
+	Pool      *pgxpool.Pool
+	Tokens    *auth.TokenMaker
+	Games     *game.Manager
+	WSOrigins []string
 }
 
-func New(pool *pgxpool.Pool, tokens *auth.TokenMaker) *Handler {
-	return &Handler{pool: pool, q: db.New(pool), tokens: tokens}
+type Handler struct {
+	pool      *pgxpool.Pool
+	q         *db.Queries
+	tokens    *auth.TokenMaker
+	games     *game.Manager
+	wsOrigins []string
+}
+
+func New(d Deps) *Handler {
+	return &Handler{
+		pool:      d.Pool,
+		q:         db.New(d.Pool),
+		tokens:    d.Tokens,
+		games:     d.Games,
+		wsOrigins: d.WSOrigins,
+	}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -29,13 +46,18 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
 
-	// Cần đăng nhập
+	// Quiz (host)
 	mux.Handle("GET /api/me", authed(h.me))
-
 	mux.Handle("GET /api/quizzes", authed(h.listQuizzes))
 	mux.Handle("POST /api/quizzes", authed(h.createQuiz))
 	mux.Handle("GET /api/quizzes/{id}", authed(h.getQuiz))
 	mux.Handle("DELETE /api/quizzes/{id}", authed(h.deleteQuiz))
+
+	// Phòng chơi realtime
+	mux.Handle("POST /api/rooms", authed(h.createRoom))
+	mux.HandleFunc("GET /api/rooms/{pin}", h.roomInfo)
+	mux.HandleFunc("GET /ws/host/{pin}", h.hostWS)
+	mux.HandleFunc("GET /ws/play/{pin}", h.playWS)
 
 	return mux
 }

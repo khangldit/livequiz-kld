@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,10 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
+	"github.com/khangldit/livequiz-kld/internal/auth"
 	"github.com/khangldit/livequiz-kld/internal/config"
+	"github.com/khangldit/livequiz-kld/internal/game"
 	"github.com/khangldit/livequiz-kld/internal/handler"
 	"github.com/khangldit/livequiz-kld/internal/httpx"
-	"github.com/khangldit/livequiz-kld/internal/auth"
 )
 
 func main() {
@@ -49,12 +51,19 @@ func run() error {
 	slog.Info("database connected")
 
 	tokens := auth.NewTokenMaker(cfg.JWTSecret)
-	h := handler.New(pool, tokens)
+	games := game.NewManager(nil) // nil = chưa lưu kết quả (Phần 3 sẽ thêm)
+	h := handler.New(handler.Deps{
+		Pool:      pool,
+		Tokens:    tokens,
+		Games:     games,
+		WSOrigins: wsOrigins(cfg.CORSOrigin),
+	})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           httpx.CORS(cfg.CORSOrigin, h.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
+		// Không đặt WriteTimeout: nó sẽ cắt các kết nối WebSocket sống lâu.
 	}
 
 	errCh := make(chan error, 1)
@@ -74,5 +83,19 @@ func run() error {
 	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	// srv.Shutdown không quản lý kết nối WebSocket (đã bị "hijack") → phải tự đóng các phòng.
+	return errors.Join(
+		srv.Shutdown(shutdownCtx),
+		games.Shutdown(shutdownCtx),
+	)
+}
+
+// wsOrigins: "https://livequiz.vercel.app" → ["livequiz.vercel.app"]
+// (thư viện websocket so khớp theo host của header Origin).
+func wsOrigins(corsOrigin string) []string {
+	u, err := url.Parse(corsOrigin)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	return []string{u.Host}
 }
